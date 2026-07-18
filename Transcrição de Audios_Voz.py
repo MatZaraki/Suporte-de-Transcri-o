@@ -1,66 +1,70 @@
 import assemblyai as aai
+import requests
 import os
-from pydub import AudioSegment
 
+# CONFIGURAÇÕES
+AQ_KEY = "KEY_DA_API_DO_GOOGLE"  # Substitua pelo seu API Key do Google
+aai.settings.api_key = "KEY_DA_API_DO_ASSEMBLYAI"  # Substitua pelo seu API Key do AssemblyAI
 
-aai.settings.api_key = "878f436a846942208a01746981fcf3cf"
+caminho_audio = r"CAMINHO_DO_ARQUIVO_DE_AUDIO.mp3"  # Substitua pelo caminho do seu arquivo de áudio
+caminho_saida = r"CAMINHO_DO_ARQUIVO_DE_SAIDA.txt"  # Substitua pelo caminho do seu arquivo de saída
 
+def dividir_em_blocos(texto, caracteres_max=12000):
+    paragrafos = texto.split('\n')
+    blocos = []
+    bloco_atual = ""
+    for p in paragrafos:
+        if len(bloco_atual) + len(p) < caracteres_max:
+            bloco_atual += p + "\n"
+        else:
+            blocos.append(bloco_atual)
+            bloco_atual = p + "\n"
+    blocos.append(bloco_atual)
+    return blocos
 
-aai.settings.http_timeout = 1200.0  
+print("Iniciando processamento com Identificação Automática...")
 
-
-caminho_audio = r"C:\Users\matheusss\Downloads\Reunião.mp3"
-caminho_comprimido = r"C:\Users\matheusss\Downloads\reuniao_temporaria_leve.mp3"
-caminho_saida = r"C:\Users\matheusss\Downloads\transcricao_reuniao.txt"
-
-print("Iniciando o processo...")
-
-if not os.path.exists(caminho_audio):
-    print(f"Erro: O arquivo final de áudio não foi encontrado em:\n{caminho_audio}")
-    print("Verifique se o download no Opera já terminou de verdade!")
-else:
+try:
+    transcritor = aai.Transcriber()
+    config = aai.TranscriptionConfig(speaker_labels=True, language_code="pt")
     
-    try:
-        print("\nAnalisando e comprimindo o áudio da reunião...")
-        audio = AudioSegment.from_file(caminho_audio)
+    print("Transcrevendo...")
+    transcricao = transcritor.transcribe(caminho_audio, config=config)
+    texto_completo = "\n".join([f"Palestrante {f.speaker}: {f.text}" for f in transcricao.utterances])
+
+    blocos = dividir_em_blocos(texto_completo)
+    
+    texto_final_revisado = ""
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+    headers = {"x-goog-api-key": AQ_KEY, "Content-Type": "application/json"}
+
+    for i, bloco in enumerate(blocos):
+        print(f"-> Processando bloco {i+1}/{len(blocos)}...")
         
-       #conversão de audio 
-        audio.export(caminho_comprimido, format="mp3", bitrate="32k", parameters=["-ac", "1"])
-        print("Compressão concluída com sucesso!")
-        audio_para_enviar = caminho_comprimido
-    except Exception as e:
-        print(f"Aviso: Não foi possível comprimir o áudio ({e}). Enviando o original...")
-        audio_para_enviar = caminho_audio
-
-    
-    try:
-        config = aai.TranscriptionConfig(
-            speaker_labels=True, 
-            language_code="pt"
+        # --- PROMPT INTELIGENTE ---
+        comando = (
+            "Analise o texto a seguir. "
+            "1. IDENTIFICAÇÃO: É uma música, uma reunião de trabalho, uma palestra ou uma conversa informal? "
+            "2. FORMATAÇÃO: "
+            "   - Se for MÚSICA: Ignore os 'Palestrantes', remova tags de tempo, e estruture como letra (Versos, Refrão, Ponte). "
+            "   - Se for REUNIÃO/CONVERSA: Mantenha os palestrantes, estruture como ata com tópicos e decisões. "
+            "   - Se for PALESTRA: Formate com introdução, tópicos de desenvolvimento e conclusão. "
+            "3. REGRA GERAL: Não resuma o conteúdo, mantenha as informações originais, corrija apenas gramática e ortografia. "
+            "Texto:\n\n" + bloco
         )
-
-        transcritor = aai.Transcriber()
         
-        print("\nEnviando o áudio da reunião para a AssemblyAI...")
-        print("Processando vozes... Por favor, aguarde...")
+        payload = {"contents": [{"parts": [{"text": comando}]}]}
+        response = requests.post(url, json=payload, headers=headers)
         
-        transcricao = transcritor.transcribe(audio_para_enviar, config=config)
+        if response.status_code == 200:
+            texto_final_revisado += response.json()['candidates'][0]['content']['parts'][0]['text'] + "\n\n"
+        else:
+            print(f"Erro no bloco {i+1}: {response.text}")
 
-        print("\nOrganizando as falas dos participantes...")
-        with open(caminho_saida, "w", encoding="utf-8") as f:
-            for fala in transcricao.utterances:
-               #identificação por voz
-                linha = f"Palestrante {fala.speaker}: {fala.text}\n\n"
-                f.write(linha)
+    with open(caminho_saida, "w", encoding="utf-8") as f:
+        f.write(texto_final_revisado)
+        
+    print(f"\nSucesso! Arquivo final salvo em: {caminho_saida}")
 
-        print(f"\n--- Transcrição Concluída com Sucesso! ---")
-        print(f"O roteiro da reunião foi salvo em:\n{caminho_saida}")
-
-    except Exception as e:
-        print(f"\nOcorreu um erro durante a transcrição: {e}")
-
-    finally:
-        # Remove o arquivo temporário
-        if os.path.exists(caminho_comprimido):
-            os.remove(caminho_comprimido)
-            print("Limpeza concluída.")
+except Exception as e:
+    print(f"\nERRO: {e}")
